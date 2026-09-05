@@ -1,7 +1,6 @@
 import streamlit as st
 import numpy as np
 import librosa
-import hashlib
 import tempfile
 import os
 
@@ -11,13 +10,14 @@ st.caption("AI Voice Clone Detection")
 uploaded_file = st.file_uploader("Upload audio (.wav or .mp3)")
 
 if uploaded_file is not None:
-    # Safely write the memory file to a physical temporary file for MP3 decoders
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_file:
+    # Dynamically grab the correct extension (.wav or .mp3)
+    file_extension = os.path.splitext(uploaded_file.name)[1]
+    
+    with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as tmp_file:
         tmp_file.write(uploaded_file.getvalue())
         tmp_file_path = tmp_file.name
     
     try:
-        # AI inspection of the physical file
         y, sr = librosa.load(tmp_file_path, sr=16000)
         flatness = float(np.mean(librosa.feature.spectral_flatness(y=y)))
         
@@ -32,6 +32,5 @@ if uploaded_file is not None:
             st.error("HIGH-RISK: AI Clone Detected")
             
     finally:
-        # Instantly delete the raw audio to maintain data privacy compliance
         os.remove(tmp_file_path)
-        
+

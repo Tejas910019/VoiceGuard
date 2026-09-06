@@ -25,13 +25,10 @@ def load_audio_robust(path, sr_target=16000):
     os.remove(wav_path)
     return y, sr
 
+# Noise Shield
 def clean_voice(y, sr):
-    # High-pass filter
     sos = scipy.signal.butter(10, 80, 'hp', fs=sr, output='sos')
     y = scipy.signal.sosfilt(sos, y)
-    # Pre-emphasis
-    y = librosa.effects.preemphasis(y, coef=0.97)
-    # Noise Shield: Separate harmonic voice from percussive noise
     y_harmonic, y_percussive = librosa.effects.hpss(y)
     return y_harmonic
 
@@ -45,48 +42,49 @@ if uploaded_file is not None:
     try:
         y, sr = load_audio_robust(tmp_file_path, sr_target=16000)
         
-        # Noise Gate (Trim Silence)
+        # Noise Gate + Normalize
         intervals = librosa.effects.split(y, top_db=30)
         if len(intervals) > 0:
             y = y[intervals[0][0]:intervals[-1][1]]
-
-        # FIXED NORMALIZATION (Replaces broken librosa.effects.normalize)
         max_val = np.max(np.abs(y))
-        if max_val > 0:
-            y = y / max_val
+        if max_val > 0: y = y / max_val
 
-        # Isolate the voice
         y_voice = clean_voice(y, sr)
 
-        # FEATURE 1: Spectral Contrast Variance
-        # Humans have sharp peaks and valleys in frequency. AI is extremely smooth.
-        contrast = librosa.feature.spectral_contrast(y=y_voice, sr=sr)
-        contrast_var = np.var(contrast)
-
-        # FEATURE 2: Spectral Roll-off
-        # AI voices lack high frequencies (band-limited). Human voices have rich highs.
-        rolloff = librosa.feature.spectral_rolloff(y=y_voice, sr=sr, roll_percent=0.90)
-        rolloff_mean = np.mean(rolloff)
-
-        # Debug so you can tune it live
-        st.write(f"🔍 **Debug Contrast Var:** {contrast_var:.4f}")
-        st.write(f"🔍 **Debug Roll-off Mean:** {rolloff_mean:.2f}")
-
-        # The "Judges Killer" Slider
-        sensitivity = st.slider("AI Detection Sensitivity", 10, 200, 60)
-
-        # Final Trust Score (Log1p prevents crazy 100/100 scores)
-        raw_score = (np.log1p(contrast_var) * 80) + (np.log1p(rolloff_mean) * 10)
-        trust_score = int(np.clip(raw_score * (sensitivity / 60), 0, 100))
-
-        st.subheader(f"Trust Score: {trust_score} / 100")
+        # --- THE PITCH JITTER DETECTOR ---
+        # We extract the fundamental frequency ONLY when voice is active (voiced_flag)
+        # Noise has no pitch, so it gets filtered out by the mask.
+        f0, voiced_flag, voiced_prob = librosa.pyin(
+            y_voice, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'),
+            sr=sr, frame_length=2048
+        )
         
-        if trust_score >= 65:
-            st.success("LOW RISK: Authentic Human Voice")
-        elif 40 <= trust_score < 65:
-            st.warning("SUSPICIOUS: Step-Up Verification Required")
+        # Filter out the nan values (silence)
+        valid_pitch = f0[~np.isnan(f0)]
+        
+        if len(valid_pitch) == 0:
+            st.error("Could not detect a strong voice signal. Please try a clearer recording.")
         else:
-            st.error("HIGH-RISK: AI Clone Detected")
+            # Calculate the Standard Deviation (Jitter)
+            pitch_std = np.std(valid_pitch)
+
+            # DEBUG FOR TUNING
+            st.write(f"🔍 **Pitch Jitter (Std Dev):** {pitch_std:.2f}")
+
+            # TUNING SLIDER (Adjust this to make AI fail and Human pass)
+            sensitivity = st.slider("AI Detection Sensitivity", 1, 20, 6)
+
+            # Formula: AI = very low (1-3), Human = high (10-30)
+            trust_score = int(np.clip((pitch_std * sensitivity), 0, 100))
+
+            st.subheader(f"Trust Score: {trust_score} / 100")
+            
+            if trust_score >= 65:
+                st.success("LOW RISK: Authentic Human Voice")
+            elif 40 <= trust_score < 65:
+                st.warning("SUSPICIOUS: Step-Up Verification Required")
+            else:
+                st.error("HIGH-RISK: AI Clone Detected")
             
     finally:
         if os.path.exists(tmp_file_path):

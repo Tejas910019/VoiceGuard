@@ -1,12 +1,10 @@
 import streamlit as st
 import numpy as np
 import librosa
-import librosa.effects
 import tempfile
 import os
 import subprocess
 import scipy.signal
-import scipy.io.wavfile as wavfile
 
 st.title("VoiceGuard Prototype")
 st.caption("AI Voice Clone Detection")
@@ -21,25 +19,20 @@ def load_audio_robust(path, sr_target=16000):
     try:
         y, sr = librosa.load(wav_path, sr=sr_target)
     except Exception:
+        import scipy.io.wavfile as wavfile
         sr, y_int = wavfile.read(wav_path)
         y = y_int.astype(np.float32) / 32768.0
     os.remove(wav_path)
     return y, sr
 
-# NOISE SHIELD FUNCTION (The Hackathon Trick)
 def clean_voice(y, sr):
-    # 1. High-pass filter to remove low-end hum/fans
+    # High-pass filter
     sos = scipy.signal.butter(10, 80, 'hp', fs=sr, output='sos')
     y = scipy.signal.sosfilt(sos, y)
-    
-    # 2. Pre-emphasis to boost human vocal frequencies
+    # Pre-emphasis
     y = librosa.effects.preemphasis(y, coef=0.97)
-    
-    # 3. Separate noise (percussive) from voice (harmonic)
-    # AI clones are highly harmonic; background noise is percussive.
+    # Harmonic separation
     y_harmonic, y_percussive = librosa.effects.hpss(y)
-    
-    # We ONLY analyze the harmonic part (the voice)
     return y_harmonic
 
 if uploaded_file is not None:
@@ -52,23 +45,31 @@ if uploaded_file is not None:
     try:
         y, sr = load_audio_robust(tmp_file_path, sr_target=16000)
         
-        # Run the voice through the Noise Shield
+        # STEP 1: Noise Gate (Trim silence!)
+        intervals = librosa.effects.split(y, top_db=30)
+        if len(intervals) > 0:
+            y = y[intervals[0][0]:intervals[-1][1]]
+
+        # STEP 2: Normalize Loudness (Makes MFCC stable!)
+        y, _ = librosa.effects.normalize(y)
+
+        # STEP 3: Clean Voice
         y_voice = clean_voice(y, sr)
 
-        # Calculate variance on the CLEAN voice
+        # STEP 4: Log Compression! (Crushes 17.6 down to 2.9)
         mfccs = librosa.feature.mfcc(y=y_voice, sr=sr, n_mfcc=13)
-        mfcc_var = np.mean(np.std(mfccs, axis=1))
+        mfcc_var = np.log1p(np.mean(np.std(mfccs, axis=1))) # log1p fixes the 100/100 bug
         
         zcr = librosa.feature.zero_crossing_rate(y_voice)
-        zcr_var = np.var(zcr)
+        zcr_var = np.log1p(np.var(zcr))
 
-        # DEBUG: Show the raw numbers so you can tune it!
-        st.write(f"🔍 **Clean MFCC Variance:** {mfcc_var:.4f}")
-        st.write(f"🔍 **Clean ZCR Variance:** {zcr_var:.6f}")
+        st.write(f"🔍 **Debug Log-MFCC Var:** {mfcc_var:.4f}")
+        st.write(f"🔍 **Debug Log-ZCR Var:** {zcr_var:.6f}")
 
-        # TUNING: Cleaned voice tends to have lower variance. 
-        # Use 50 (MFCC) and 15 (ZCR). Adjust these if needed.
-        trust_score = int(np.clip((mfcc_var * 50) + (zcr_var * 15), 0, 100))
+        # STEP 5: Live Tuner Slider (Judges will love this!)
+        sensitivity = st.slider("AI Detection Sensitivity", 10, 100, 30)
+        
+        trust_score = int(np.clip((mfcc_var * sensitivity) + (zcr_var * 10), 0, 100))
 
         st.subheader(f"Trust Score: {trust_score} / 100")
         

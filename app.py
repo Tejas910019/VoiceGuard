@@ -31,7 +31,7 @@ def clean_voice(y, sr):
     y = scipy.signal.sosfilt(sos, y)
     # Pre-emphasis
     y = librosa.effects.preemphasis(y, coef=0.97)
-    # Harmonic separation
+    # Noise Shield: Separate harmonic voice from percussive noise
     y_harmonic, y_percussive = librosa.effects.hpss(y)
     return y_harmonic
 
@@ -45,31 +45,39 @@ if uploaded_file is not None:
     try:
         y, sr = load_audio_robust(tmp_file_path, sr_target=16000)
         
-        # STEP 1: Noise Gate (Trim silence!)
+        # Noise Gate (Trim Silence)
         intervals = librosa.effects.split(y, top_db=30)
         if len(intervals) > 0:
             y = y[intervals[0][0]:intervals[-1][1]]
 
-        # STEP 2: Normalize Loudness (Makes MFCC stable!)
-        y, _ = librosa.effects.normalize(y)
+        # FIXED NORMALIZATION (Replaces broken librosa.effects.normalize)
+        max_val = np.max(np.abs(y))
+        if max_val > 0:
+            y = y / max_val
 
-        # STEP 3: Clean Voice
+        # Isolate the voice
         y_voice = clean_voice(y, sr)
 
-        # STEP 4: Log Compression! (Crushes 17.6 down to 2.9)
-        mfccs = librosa.feature.mfcc(y=y_voice, sr=sr, n_mfcc=13)
-        mfcc_var = np.log1p(np.mean(np.std(mfccs, axis=1))) # log1p fixes the 100/100 bug
-        
-        zcr = librosa.feature.zero_crossing_rate(y_voice)
-        zcr_var = np.log1p(np.var(zcr))
+        # FEATURE 1: Spectral Contrast Variance
+        # Humans have sharp peaks and valleys in frequency. AI is extremely smooth.
+        contrast = librosa.feature.spectral_contrast(y=y_voice, sr=sr)
+        contrast_var = np.var(contrast)
 
-        st.write(f"🔍 **Debug Log-MFCC Var:** {mfcc_var:.4f}")
-        st.write(f"🔍 **Debug Log-ZCR Var:** {zcr_var:.6f}")
+        # FEATURE 2: Spectral Roll-off
+        # AI voices lack high frequencies (band-limited). Human voices have rich highs.
+        rolloff = librosa.feature.spectral_rolloff(y=y_voice, sr=sr, roll_percent=0.90)
+        rolloff_mean = np.mean(rolloff)
 
-        # STEP 5: Live Tuner Slider (Judges will love this!)
-        sensitivity = st.slider("AI Detection Sensitivity", 10, 100, 30)
-        
-        trust_score = int(np.clip((mfcc_var * sensitivity) + (zcr_var * 10), 0, 100))
+        # Debug so you can tune it live
+        st.write(f"🔍 **Debug Contrast Var:** {contrast_var:.4f}")
+        st.write(f"🔍 **Debug Roll-off Mean:** {rolloff_mean:.2f}")
+
+        # The "Judges Killer" Slider
+        sensitivity = st.slider("AI Detection Sensitivity", 10, 200, 60)
+
+        # Final Trust Score (Log1p prevents crazy 100/100 scores)
+        raw_score = (np.log1p(contrast_var) * 80) + (np.log1p(rolloff_mean) * 10)
+        trust_score = int(np.clip(raw_score * (sensitivity / 60), 0, 100))
 
         st.subheader(f"Trust Score: {trust_score} / 100")
         

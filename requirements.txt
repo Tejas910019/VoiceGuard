@@ -4,3 +4,5 @@ librosa
 matplotlib
 soundfile
 audioread
+scipy
+pydub
